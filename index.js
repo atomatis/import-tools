@@ -1,123 +1,190 @@
+if (typeof localStorage === 'undefined' || localStorage === null) {
+    const LocalStorage = require('node-localstorage').LocalStorage
+    localStorage = new LocalStorage('./scratch')
+}
 
-
-const csv = require('csv-parser')
-const async = require('async')
+const auth = require('./auth.js')
+const formater = require('./formater.js')
+const categories = require('./ressource_generator/categories.js')
+const sizes = require('./ressource_generator/sizes.js')
 const axios = require('axios')
-const fs = require('fs')
-const results = []
+const path = require('path');
+const fs = require('fs');
 
-let i = 0
+const baseUrl = 'https://release-rloutlet-api.kangourouge.com/'
+const directoryPath = path.join(__dirname, './file/image');
 
-let trys = []
+// IRI
+const seasonIri = '/api/seasons/1' //'/api/seasons/1'
+const brandIri = '/api/brands/1' //'/api/brands/1'
+const typesIri = {
+    'Men': '/api/types/1', //api/types/1'
+    'Women': '/api/types/13', ///api/types/13
+    'Children': '/api/types/14', ///api/types/14
+}
 
-//construct waterfall
-// async.waterfall(trys), function (err) {
-//     if (err) {
-//         console.error(err)
-//     }
-// }
+totalProductModel = 0
+totalProduct = 0
+totalProductSize = 0
 
+auth.getBearer(importCsv)
 
-// axios({
-//     method: 'put',
-//     url: 'https://development-rloutlet-api.kangourouge.com/api/brands/252',
-//     data: {
-//         'name': 'haha'
-//     },
-//     headers: {
-//         'Authorization': authKey,
-//         'Content-type': 'application/json'
-//     }
-// })
-// .then(function (response) {
-//     console.log(response.data)
-// })
-// .catch(function (error) {
-//     console.log(error);
-// })
+function importCsv() {
+    formater.format('./file/to-import.csv', checkData)
+}
 
-fs.createReadStream('file/to-import.csv')
-.pipe(csv({ separator: ';' }))
-  .on('data', (data) => results.push(data))
-  .on('end', () => {
-      
-    let data = formatCsv(results)
-    let categories = getCategories(data)
-    let sizes = getSizes(data)
+function checkData(data) {
+    categories.loadCategories(data)
+    sizes.loadSizes(data)
 
 
-    console.log(categories)
-    console.log(sizes)
+    //passsing directoryPath and callback function
+    fs.readdir(directoryPath, function (err, files) {
+        //handling error
+        if (err) {
+            return console.log('Unable to scan directory: ' + err);
+        }
+        //listing all files using forEach
+        files.forEach(function (file) {
+            // Do whatever you want to do with the file
+            console.log(file);
+        });
+    });
 
-  })
 
+    return
 
-  function formatCsv(table) {
-    let data = {}
-    table.forEach(element => {
-        i++
-        // if (i > 10) return
+    if (null === localStorage.getItem('categories') || null === localStorage.getItem('sizes') ) {
+        console.log('loading data')
 
-        if (undefined === data[element.name]) {
-            data[element.name] = {
-                'name': element.name,
-                'products': {},
-                'categories': element.category.split('/'),
-                'type': element.type,
-                'description': element.description
-            }
+        return
+    }
+
+    addProductModelEntry(Object.values(data))
+}
+
+function addProductModelEntry(values) {
+    let productModel = values.pop()
+    let productModelData = formatProductModelData(productModel)
+
+    axios({
+        method: 'post',
+        url: baseUrl+'api/product_models',
+        data: productModelData,
+        headers: {
+            'Authorization': localStorage.getItem('token'),
+            'Content-type': 'application/json'
+        }
+    })
+    .then(function (response) {
+        let productModelIri = response.data['@id']
+        totalProductModel++
+
+        for (let [key, product] of Object.entries(productModel.products)) {
+            registerProduct(productModelIri, productModel, product)
+
         }
 
-        productModel = data[element.name]
-
-        if (undefined === productModel.products[element.sku]) {
-            productModel.products[element.sku] = {
-                'name': element.name,
-                'colorName': element.colorName,
-                'sizes': [],
-            }
+        if (0 < values.length) {
+            addProductModelEntry(values)
         }
+    })
+    .catch(function (error) {
+        console.log(error);
+    })
+}
 
-        product = productModel.products[element.sku]
 
-        if ('' !== element.hexa) product.hexa = element.hexa
+function registerProduct(productModelIri, productModel, product) {
+    let productData = formatProductData(productModelIri, product)
 
-        product.sizes.push({
-            'ean': element.ean,
-            'size': element.size,
+    axios({
+        method: 'post',
+        url: baseUrl+'api/products',
+        data: productData,
+        headers: {
+            'Authorization': localStorage.getItem('token'),
+            'Content-type': 'application/json'
+        }
+    })
+    .then(function (response) {
+        console.log(response.status + response.data['@id'])
+    })
+    .catch(function (error) {
+        console.log(error)
+    })
+
+}
+
+
+function formatProductModelData(productModel) {
+    let categories = []
+
+    productModel.categories.forEach(category => {
+        categories.push(localStorage.getItem('categories'+category))
+    })
+
+    return {
+        'name': productModel.name,
+        'categories': categories,
+        'translations': {
+            'fr': {
+                'locale': 'fr',
+                'description': productModel.description
+            },
+            'en': {
+                'locale': 'en',
+                'description': productModel.description
+            }
+        },
+        'type': typesIri[productModel.type],
+        'brand': brandIri,
+        'prices': [
+            {
+                'value': 10,
+                'currency': '€'
+            },
+            {
+                'value': 10,
+                'currency': '£'
+            },
+        ]
+    }
+}
+
+function formatProductData(productModelIri, product) {
+    let productSizes = []
+
+    product.sizes.forEach(size => {
+        productSizes.push({
+            size: localStorage.getItem('sizes'+size.size),
+            EAN: size.ean,
         })
     })
 
-      return data
-  }
 
-  function getCategories(data) {
-    let categories = []
-
-    for (let [key, productModel] of Object.entries(data)) {
-        productModel.categories.forEach(category => {
-            categories[category] = category.toLowerCase()
-        })
-      }
-
-    return categories
-  }
-
-  function getSizes(data) {
-    let sizes = []
-
-    for (let [key, productModel] of Object.entries(data)) {
-        for (let [key, product] of Object.entries(productModel.products)) {
-            product.sizes.forEach(element => {
-                sizes[element.size] = element.size.toLowerCase()
-            })
-        }
+    return {
+        'SKU': product.sku,
+        'season': seasonIri,
+        'productModel': productModelIri,
+        'productSizes': productSizes,
+        'productImages': [],
+        'color': product.hexa,
+        'colorName': product.colorName,
+        'translations': {
+            'fr': {
+                'locale': 'fr',
+                'name': product.name
+            },
+            'en': {
+                'locale': 'en',
+                'name': product.name
+            }
+        },
     }
+}
 
-    return sizes
-  }
 
-  function test(next) {
-      console.log('hello')
-      next(null)
-  }
+305627
+305703
+309448
